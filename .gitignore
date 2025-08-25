@@ -1,5 +1,5 @@
 # Rust - Archivos generados por Cargo
-/target/
+keylogger-rs/target/
 **/*.rs.bk
 
 # Binarios y símbolos de debug (ya cubiertos por /target/, pero es una buena práctica)
