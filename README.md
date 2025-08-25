@@ -1,4 +1,4 @@
-# Rust Key Logger
+# WIP: Rust Key Logger
 
 A Windows keylogger implementation written in Rust for educational and security research purposes.
 
