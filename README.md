@@ -30,7 +30,7 @@ This keylogger demonstrates low-level Windows API integration with Rust, focusin
     - [x] Low-level keyboard hook via WinAPI
     - [x] System-wide keystroke capture
     - [x] Special key handling (SHIFT, CTRL, ENTER, etc.)
-    - [ ] when user clicks with mouse, capture the application in focus and coordinates of the click (with resolution scaling support)
+    - [x] when user clicks with mouse, capture the application in focus and coordinates of the click (with resolution scaling support)
     - [ ] Timestamp logging
 
 - [ ] **Context Awareness Module**

