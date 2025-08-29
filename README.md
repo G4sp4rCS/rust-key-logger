@@ -26,7 +26,7 @@ This keylogger demonstrates low-level Windows API integration with Rust, focusin
 ### 📋 Todo List
 
 #### Phase 1: Core Functionality
-- [ ] **Keystroke Hooking Module**
+- [x] **Keystroke Hooking Module**
     - [x] Low-level keyboard hook via WinAPI
     - [x] System-wide keystroke capture
     - [x] Special key handling (SHIFT, CTRL, ENTER, etc.)

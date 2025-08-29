@@ -5,15 +5,16 @@ edition = "2021"
 
 [dependencies]
 winapi = { version = "0.3", features = [
-    "winuser",      # Para hooks, GetSystemMetrics, GetCursorPos
-    "windef",       # Para tipos básicos como HHOOK, POINT
-    "minwindef",    # Para LPARAM, LRESULT, WPARAM
-    "sysinfoapi",   # Para GetSystemInfo, SYSTEM_INFO
-    "winnt",        # Para OSVERSIONINFOW
-    "winbase",      # Para GetVersionExW
-    "processthreadsapi", # Para GetCurrentProcessId
+    "winreg", 
+    "sysinfoapi", 
+    "winnt", 
+    "minwindef",
+    "winuser",
+    "winbase",
+    "processthreadsapi",
     "securitybaseapi",
-    "handleapi",   # Para CloseHandle
+    "handleapi",
+    "psapi"
 ] }
 ctrlc = "3.4"
 chrono = { version = "0.4", features = ["serde"] }
