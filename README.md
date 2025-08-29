@@ -56,7 +56,7 @@ This keylogger demonstrates low-level Windows API integration with Rust, focusin
 
 ## Dependencies
 
-- `windows-sys` - Windows API bindings
+- `winapi` - Windows API bindings
 - `chrono` - Timestamp management
 - `aes-gcm` or `chacha20poly1305` - Encryption
 - `reqwest` - HTTP requests (future)
