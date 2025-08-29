@@ -34,8 +34,8 @@ This keylogger demonstrates low-level Windows API integration with Rust, focusin
     - [ ] Timestamp logging
 
 - [ ] **Context Awareness Module**
-    - [ ] Active application identification
-    - [ ] Window title capture
+    - [x] Active application identification
+    - [x] Window title capture
     - [ ] Credential form detection
     - [ ] PII and financial data form detection
 
