@@ -14,14 +14,18 @@ use accesskit::{NodeBuilder, NodeId, Role, Tree, TreeUpdate};
 use accesskit_windows::Adapter;
 use std::collections::HashMap;
 
+
+// Estructura de datos para campos sensibles detectados
 pub struct SensitiveFieldDetector {
-    sensitive_fields: HashMap<String, FieldType>,
+    sensitive_fields: HashMap<String, FieldType>, // utilizamos una tabla hash para evitar duplicados
 }
 
+
+// Tipos de campos sensibles
 #[derive(Debug, Clone)]
 pub enum FieldType {
     Password,
-    Email,
+    Email, // email = username en muchos casos
     CreditCard,
     CVV,
     DNI,
@@ -30,13 +34,16 @@ pub enum FieldType {
     Login,
 }
 
+// Implementación del detector de campos sensibles
 impl SensitiveFieldDetector {
     pub fn new() -> Self {
         Self {
-            sensitive_fields: HashMap::new(),
+            sensitive_fields: HashMap::new(), // hashmap constructor
         }
     }
     
+
+    // Escanear la ventana activa y detectar campos sensibles
     pub fn scan_active_window(&mut self) -> Result<Vec<SensitiveField>, Box<dyn std::error::Error>> {
         let mut sensitive_fields = Vec::new();
         
@@ -85,7 +92,7 @@ impl SensitiveFieldDetector {
                         Some(FieldType::CreditCard)
                     } else if name_lower.contains("cvv") || name_lower.contains("cvc") {
                         Some(FieldType::CVV)
-                    } else if name_lower.contains("DNI") || name_lower.contains("social") {
+                    } else if name_lower.contains("DNI") || name_lower.contains("dni") {
                         Some(FieldType::DNI)
                     } else if name_lower.contains("phone") || name_lower.contains("tel") {
                         Some(FieldType::Phone)
