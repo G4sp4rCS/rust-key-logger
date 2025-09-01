@@ -5,18 +5,26 @@ edition = "2021"
 
 [dependencies]
 winapi = { version = "0.3", features = [
-    "winreg", 
+    "winuser", 
+    "windef", 
+    "minwindef", 
     "sysinfoapi", 
     "winnt", 
-    "minwindef",
-    "winuser",
     "winbase",
-    "processthreadsapi",
+    "processthreadsapi", 
+    "psapi", 
+    "handleapi", 
+    "winreg", 
     "securitybaseapi",
-    "handleapi",
-    "psapi"
+    "oleauto",      
+    "combaseapi",   
+    "wtypes",
+    "winerror",        
 ] }
 ctrlc = "3.4"
 chrono = { version = "0.4", features = ["serde"] }
-accesskit = "0.12"
-accesskit-windows = "0.15"  # Para Windows específicamente
+windows = { version = "0.52", features = [
+    "Win32_UI_Accessibility",
+    "Win32_System_Com",
+    "Win32_System_Variant"
+] }
