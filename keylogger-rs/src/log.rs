@@ -5,13 +5,12 @@ use std::collections::HashMap;
 use crate::utils::{get_active_process_info, is_sensitive_process, ActiveProcessInfo};
 
 // Usar la crate windows para UI Automation
-use winapi::um::oaidl::VARIANT;
-use winapi::um::combaseapi::*;
-use winapi::um::oleauto::*;
-use winapi::shared::wtypes::*;
-use winapi::um::winerror::{S_OK, FAILED};
+use windows::Win32::UI::Accessibility::*;
+use windows::Win32::System::Com::*;
+use windows::Win32::System::Ole::*;
+use windows::Win32::System::Variant::*;
+use windows::Win32::Foundation::*;
 use std::ptr;
-
 pub struct SensitiveFieldDetector {
     sensitive_fields: HashMap<String, FieldType>,
 }
@@ -63,36 +62,37 @@ impl SensitiveFieldDetector {
     }
 
     // Implementación de UI Automation para Windows
-    fn scan_with_ui_automation(&self, process_info: &ActiveProcessInfo) -> Result<Vec<SensitiveField>, Box<dyn std::error::Error>> {
+fn scan_with_ui_automation(&self, process_info: &ActiveProcessInfo) -> Result<Vec<SensitiveField>, Box<dyn std::error::Error>> {
         unsafe {
-            // Inicializar COM
+            // Initialize COM
             CoInitialize(None)?;
-            
+
             let mut sensitive_fields = Vec::new();
+
+            // Create instance of UI Automation
+            let automation: IUIAutomation = CoCreateInstance(&UIAutomation::IID, None, CLSCTX_INPROC_SERVER)?;
             
-            // Crear instancia de UI Automation
-            let automation: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
-            
-            // Obtener el elemento de la ventana activa
+            // Get the root element (desktop)
             let desktop = automation.GetRootElement()?;
             let focused_element = automation.GetFocusedElement()?;
-            
-            // Buscar elementos sensibles en la ventana
+
+            // Search for sensitive elements in the window
             self.find_sensitive_elements(&automation, &desktop, &mut sensitive_fields)?;
-            
+
             // Cleanup COM
             CoUninitialize();
-            
+
             Ok(sensitive_fields)
         }
     }
     
-    fn find_sensitive_elements(&self, automation: &IUIAutomation, element: &IUIAutomationElement, sensitive_fields: &mut Vec<SensitiveField>) -> Result<(), Box<dyn std::error::Error>> {
+fn find_sensitive_elements(&self, automation: &IUIAutomation, element: &IUIAutomationElement, sensitive_fields: &mut Vec<SensitiveField>) -> Result<(), Box<dyn std::error::Error>> {
         unsafe {
-            // Buscar campos de entrada (Edit controls)
+            // Create a condition for Edit controls
             let property_id = UIA_ControlTypePropertyId;
             let variant = VARIANT::from(UIA_EditControlTypeId);
             let condition = automation.CreatePropertyCondition(property_id, &variant)?;
+
             let edit_elements = element.FindAll(TreeScope_Descendants, &condition)?;
             
             let count = edit_elements.Length()?;
@@ -100,7 +100,6 @@ impl SensitiveFieldDetector {
                 let edit_element = edit_elements.GetElement(i)?;
                 
                 if let Ok(field) = self.analyze_element(&edit_element) {
-                    // Detectar campos de contraseña por nombre/atributos en lugar de GetCurrentPropertyValue
                     if self.is_password_field(&edit_element) {
                         let password_field = SensitiveField {
                             id: format!("password_{}", i),
@@ -115,12 +114,10 @@ impl SensitiveFieldDetector {
                     }
                 }
             }
-            
+
             Ok(())
         }
     }
-    
-
 
 
     fn is_password_field(&self, element: &IUIAutomationElement) -> bool {
